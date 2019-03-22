@@ -1,0 +1,115 @@
+#+STARTUP: hidestars showall 
+#+OPTIONS: toc:nil num:nil html-postamble:nil
+#+AUTHOR: Dov Grobgeld
+#+TITLE: Fast binary mathematical morphology
+#+DATE: 2019-01-26 Sat
+
+* Background
+
+Mathematical morphology is a common image processing tool that is based on the matching of a structure element to the pixels in the image. For a good reference see e.g. https://www.uio.no/studier/emner/matnat/ifi/INF2310/v17/undervisningsmateriale/slides_inf2310_s17_week15.pdf . This note will describe an highly efficient implementation yielding  an order of magnitude speedup of the processing by spatial rearrangement of the inputs.
+
+* 3×3 Erosion
+
+The discussion will start with a simple 3×3 element erosion, and will then generalize it. The morphology operator determines if a pixel stays on in the next generation. For the 3×3 erosion, this turns into the logical expression: A pixel stays on if it is on AND at least one of its neighbors is on, otherwise it is turned off.
+
+This may be written in pseudo code:
+
+#+begin_src python
+  def next_generation_value(x,y):
+    neighbors = 0
+    for j in [-1,0,1]:
+      for j in [-1,0,1]:
+        if j==0 and i==0:
+          continue
+        neighbors OR= image[x-i,y-1]
+    return image[x,y] AND neighbors
+#+end_src
+
+* Complexity analysis 
+
+In the code above we do 9 lookups for each pixel in order to calculate its new value. If the image is saved as a binary 1-bit image, due to memory constraints, it becomes even more unefficient as we need unpack the input as well as pack the output or storing. This may be slightly optimized by processing 8 pixels at once to save RAM lookup, but the logical processing in the above loop is still done one bit at a time, which is highly unefficient for a 64-bit processor!
+
+* Optimization by rearrangment
+
+The key to efficient processor usage is to fill the processor registers with information for all bits that may then be processed in  parallel. To do that we need to have the data arranged accordingly. This may be done for the erosion operator, by prior to starting the erosion loop, we generate 8 different images that each is shifted in x and y in the opposite direction to the direction of the neighbor in the structure element! If we assume we have such images then the above loop becomes:
+
+#+begin_src python
+  # Assume we have an 3x3 array of preshifted images
+  # indexed by [-1,0,-1]
+  def next_generation_value(x,y):
+    neighbors = 0
+    for j in [-1,0,1]:
+      for j in [-1,0,1]:
+        if j==0 and i==0:
+          continue
+        neighbors OR= preshifted_image[i,j][x,y]
+    return image[x,y] AND neighbors
+#+end_src
+
+The beauty of the above loop is that there is no neighbor lookup in the loop, and it may therefore be done in chunks of the processor word size!
+
+* A space saving optimization
+
+Creating 8 additional images is actually unnecessary, as we only need a buffer 3 rows deep. This may be implemented by a FIFO 3 rows deep. The fifo buffer contains 9 entries corresponding to the 8 neighbors, and the non-shifted original image.
+
+The fifo buffer is set up as follows:
+
+Setup before looping over image:
+
+1. Allocate 6 row-sized buffers for holding left shifted and right shifted versions of the data.
+2. For the directions on the left, populate with the 1st, 2nd, and 3rd image rows bitshifted to the right.
+3. For the directions on the right, populate with the three rows bitshifted to the left.
+4. For the "middle directions" add pointers (no copying necessary) for the previous, the current, and the next row.
+
+* Necessary bit operations
+
+In order to calculate shifted images, or to populate the FIFO buffer, we need to bitshift an entire row of the bitmap. To do this we need to take into account both the endianess and the bitorder of the processor. E.g. on the little endian Intel processors, it is necessary to swap the endianess of the byte array after it has been casted into ~uint64_t~.  As an example here is how a row left and right shift operator looks like in gcc for a little endian intel architecture.
+
+#+begin_src c
+  // Left shift of entire uint64_t's.
+  for (int i=0; i<ulen; i++)
+  {
+    uint64_t b = __builtin_bswap64(ubuf[i]) << 1;
+    if (i<ulen-1)
+      b|= (ubuf[i+1] >> 7)&1;
+    ubuf_out[i] = __builtin_bswap64(b);
+  }
+  :
+  /* Right shif of entire uint64_t's array */
+  for (int i=ulen-1; i>=0; i--)
+  {
+    uint64_t b = __builtin_bswap64(ubuf[i]) >> 1;
+    if (i>0) 
+      b|= (ubuf[i-1] << 7) & 0x8000000000000000L;    
+    ubuf_out[i] = __builtin_bswap64(b);
+  }
+#+end_src
+
+Actual code needs to take into account end of the line bytes that don't start on byte bundaries.
+
+* Speed tests
+
+The following does a 3x3 erosion test comparison with ~skimage.morphology~. Input image 30912x3806 pixels. Tests were carried out on my i7-8550u laptop.
+
+| Library            | Speed  |
+|--------------------+--------|
+| skimage.morphology | 1.29s  |
+| our approach       | 0.040s |
+
+* Generalization for arbitrary structure elements
+
+The approach described here can be generally extended to any structure element as follows:
+
+- Create a rectangular FIFO buffer big enough for the bounding box of the structure element.
+- Initialize and roll the fifo buffer as for the 3x3 erosion example described above. As in this example for the Δx=0 column there is no need to allocate or copy memory as we can just use row pointers.
+- Create a secondary list of structure element images of the size of the number of active bits in the structure element that point to the corresponding images.
+- Loop over the structure element list as in the 3x3 erosion example.
+
+* Code
+
+The code for the this paper including an implementation for the 3x3 erosion code can be found in http://github.com/dov/dov-fast-binary-morphology .
+
+* Hasn't this been done before?
+
+- A search on the net turned up the Leptonica library, and their discussion about mathematical morphology, see http://www.leptonica.com/binary-morphology.html . Their description of using trasnlations and "rasterop" should yield a similar acceleration as the one described in this paper, though the implementation here is more space conservant, due of the fifo buffer, and faster, as it uses 64-bit words.
+
