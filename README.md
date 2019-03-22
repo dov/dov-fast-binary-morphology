@@ -8,5 +8,12 @@ This repository cantains a description and a reference implementation of fast bi
 
 # Code
 
-- TBD
+This repository contains a simple implementation in C of the method described int the paper. To test do:
+
+```sh
+make
+./test-morph circle.png
+```
+
+
 

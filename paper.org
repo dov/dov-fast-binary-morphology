@@ -6,23 +6,21 @@
 
 * Background
 
-Mathematical morphology is a common image processing tool that is based on the matching of a structure element to the pixels in the image. For a good reference see e.g. https://www.uio.no/studier/emner/matnat/ifi/INF2310/v17/undervisningsmateriale/slides_inf2310_s17_week15.pdf . This note will describe an highly efficient implementation yielding  an order of magnitude speedup of the processing by spatial rearrangement of the inputs.
+Mathematical morphology is a common image processing tool that is based on the matching of a structure element to the pixels in the image. For a good reference see e.g. https://www.uio.no/studier/emner/matnat/ifi/INF2310/v17/undervisningsmateriale/slides_inf2310_s17_week15.pdf . This note will describe an highly efficient CPU implementation.
 
 * 3×3 Erosion
 
-The discussion will start with a simple 3×3 element erosion, and will then generalize it. The morphology operator determines if a pixel stays on in the next generation. For the 3×3 erosion, this turns into the logical expression: A pixel stays on if it is on AND at least one of its neighbors is on, otherwise it is turned off.
+The discussion will start with a simple 3×3 element erosion, and will then generalize it. The morphology operator determines if a pixel stays on in the next generation. For the 3×3 erosion, this turns into the logical expression: A pixel stays on if all the pixels of the structure element are on.
 
 This may be written in pseudo code:
 
 #+begin_src python
   def next_generation_value(x,y):
-    neighbors = 0
-    for j in [-1,0,1]:
+    all_on = 1
+    for i in [-1,0,1]:
       for j in [-1,0,1]:
-        if j==0 and i==0:
-          continue
-        neighbors OR= image[x-i,y-1]
-    return image[x,y] AND neighbors
+        all_on AND= image[x+i,y+j]
+    return all_on
 #+end_src
 
 * Complexity analysis 
@@ -37,13 +35,11 @@ The key to efficient processor usage is to fill the processor registers with inf
   # Assume we have an 3x3 array of preshifted images
   # indexed by [-1,0,-1]
   def next_generation_value(x,y):
-    neighbors = 0
-    for j in [-1,0,1]:
+    all_on = 1 (x number of bits)
+    for i in [-1,0,1]:
       for j in [-1,0,1]:
-        if j==0 and i==0:
-          continue
-        neighbors OR= preshifted_image[i,j][x,y]
-    return image[x,y] AND neighbors
+        all_on AND= preshifted_image[i,j][x,y]
+    return all_on
 #+end_src
 
 The beauty of the above loop is that there is no neighbor lookup in the loop, and it may therefore be done in chunks of the processor word size!
@@ -56,10 +52,10 @@ The fifo buffer is set up as follows:
 
 Setup before looping over image:
 
-1. Allocate 6 row-sized buffers for holding left shifted and right shifted versions of the data.
+1. Allocate 9 row-sized buffers for holding the time shifted, the left shifted, and the right shifted versions of the data.
 2. For the directions on the left, populate with the 1st, 2nd, and 3rd image rows bitshifted to the right.
 3. For the directions on the right, populate with the three rows bitshifted to the left.
-4. For the "middle directions" add pointers (no copying necessary) for the previous, the current, and the next row.
+4. For the "middle directions" add copies of the previous, the current, and the next row.
 
 * Necessary bit operations
 
@@ -111,5 +107,5 @@ The code for the this paper including an implementation for the 3x3 erosion code
 
 * Hasn't this been done before?
 
-- A search on the net turned up the Leptonica library, and their discussion about mathematical morphology, see http://www.leptonica.com/binary-morphology.html . Their description of using trasnlations and "rasterop" should yield a similar acceleration as the one described in this paper, though the implementation here is more space conservant, due of the fifo buffer, and faster, as it uses 64-bit words.
+- A search on the net turned up the Leptonica library, and their discussion about mathematical morphology, see http://www.leptonica.com/binary-morphology.html . Their description of using translations and "rasterop" should yield a similar acceleration as the one described in this paper, though the implementation here is more space conservant, due of the fifo buffer, and faster, as it uses 64-bit words.
 
